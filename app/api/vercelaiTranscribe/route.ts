@@ -3,18 +3,24 @@ import Groq from "groq-sdk";
 
 const groq = new Groq();
 
-
-
 export async function POST(req: Request) {
     try {
-        
-        const formData = await req.formData();
-        const file = formData.get("file");
+        const { audioUrl } = await req.json();
 
-        if (!(file instanceof File)) {
-            return NextResponse.json({ error: "No file provided" }, { status: 400 });
+        if (!audioUrl) {
+            return Response.json({ error: "No audio URL" }, { status: 400 });
         }
 
+        // 🟢 STEP 1 — Fetch file from URL
+        const response = await fetch(audioUrl);
+        const blob = await response.blob();
+
+        // 🟢 STEP 2 — Convert to File
+        const file = new File([blob], "audio.wav", {
+            type: blob.type || "audio/wav",
+        });
+
+        // 🟢 STEP 3 — Send to Groq
         const transcript = await groq.audio.transcriptions.create({
             file,
             model: "whisper-large-v3",
@@ -24,10 +30,12 @@ export async function POST(req: Request) {
 
         return Response.json({ transcript });
 
-    } catch (error: unknown) {
+    } catch (error: any) {
         console.error(error);
-        const message = error instanceof Error ? error.message : "Transcription failed";
 
-        return Response.json({ error: message }, { status: 500 });
+        return Response.json(
+            { error: error.message },
+            { status: 500 }
+        );
     }
 }

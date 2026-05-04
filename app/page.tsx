@@ -11,6 +11,41 @@ type SummaryResult = {
   action_items: string[];
 };
 
+async function uploadToCloudinary(file: File) {
+  if (file.size > 20 * 1024 * 1024) {
+    alert("Max file size is 20MB");
+    return;
+  }
+
+  const signRes = await fetch("/api/cloudinary-signature", {
+    method: "POST",
+  });
+
+  const { timestamp, signature, cloudName, apiKey } = await signRes.json();
+  
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("api_key", apiKey);
+  formData.append("timestamp", timestamp);
+  formData.append("signature", signature);
+
+  const uploadRes = await fetch(
+    `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`,
+    {
+      method: "POST",
+      body: formData,
+    }
+  );
+
+  const data = await uploadRes.json();
+
+  if (!data.secure_url) {
+    throw new Error("Upload failed");
+  }
+
+  return data.secure_url;
+}
+
 export function parseSummaryText(text: string): SummaryResult {
   try {
     // 🟢 Step 1 — Try direct JSON parse
@@ -102,39 +137,58 @@ export default function Home() {
 
   const handleUpload = async () => {
     if (!file) return;
-
+  
     setLoading(true);
-    setStatus("Transcribing audio...");
-
-    const formData = new FormData();
-    formData.append("file", file);
-
-    const res1 = await fetch("/api/vercelaiTranscribe", {
-      method: "POST",
-      body: formData,
-    });
-
-    const data1 = await res1.json();
-
-    setStatus("Generating summary...");
-
-    const res2 = await fetch("/api/grok_summarize", {
-      method: "POST",
-      body: JSON.stringify({ transcript: data1?.transcript?.text || data1.error }),
-    });
-
-    const data2 = await res2.json();
-    if (!res2.ok || typeof data2?.result !== "string") {
-      setResult(null);
-      setStatus(data2?.error || "Failed to summarize");
-      setLoading(false);
-      return;
+  
+    try {
+      // 🟢 STEP 1 — Upload to Cloudinary
+      setStatus("Uploading audio...");
+      const audioUrl = await uploadToCloudinary(file);
+  
+      // 🟢 STEP 2 — Transcribe using URL
+      setStatus("Transcribing audio...");
+      const res1 = await fetch("/api/vercelaiTranscribe", {
+        method: "POST",
+        body: JSON.stringify({ audioUrl }),
+      });
+  
+      const data1 = await res1.json();
+  
+      if (!res1.ok) {
+        setStatus(data1?.error || "Transcription failed");
+        setLoading(false);
+        return;
+      }
+  
+      // 🟢 STEP 3 — Summarize
+      setStatus("Generating summary...");
+      const res2 = await fetch("/api/grok_summarize", {
+        method: "POST",
+        body: JSON.stringify({
+          transcript: data1?.transcript?.text || "",
+        }),
+      });
+  
+      const data2 = await res2.json();
+  
+      if (!res2.ok || typeof data2?.result !== "string") {
+        setResult(null);
+        setStatus(data2?.error || "Failed to summarize");
+        setLoading(false);
+        return;
+      }
+  
+      setResult(parseSummaryText(data2.result));
+      setStatus("");
+  
+    } catch (err: any) {
+      console.error(err);
+      setStatus(err.message || "Something went wrong");
     }
-
-    setResult(parseSummaryText(data2.result));
+  
     setLoading(false);
-    setStatus("");
   };
+
 
   return (
     <main className="min-h-screen bg-linear-to-br from-gray-50 to-gray-100 flex items-center justify-center p-6">
